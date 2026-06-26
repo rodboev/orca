@@ -33,6 +33,8 @@ function getFolderScopeCandidateRepos(args: {
   const groupIds = args.projectGroupId
     ? getProjectGroupSubtreeIds(args.projectGroups, args.projectGroupId)
     : null
+  // Why: direct path probes run before any group exists, so only path ancestry
+  // can scope the candidate repos for connection inference.
   const groupRepos = groupIds
     ? args.repos.filter(
         (repo) => typeof repo.projectGroupId === 'string' && groupIds.has(repo.projectGroupId)

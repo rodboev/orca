@@ -190,6 +190,9 @@ describe('folder workspace path status', () => {
     const provider = {
       stat: vi.fn().mockResolvedValue({ size: 0, type: 'directory', mtime: 1 })
     } as unknown as IFilesystemProvider
+    const getSshFilesystemProvider = vi.fn((connectionId?: string | null) =>
+      connectionId === 'ssh-1' ? provider : undefined
+    )
 
     await expect(
       getFolderWorkspacePathStatus(
@@ -199,9 +202,10 @@ describe('folder workspace path status', () => {
           getFolderWorkspaces: () => []
         },
         { scope: 'path', path: '/workspace/platform', connectionId: 'ssh-1' },
-        { getSshFilesystemProvider: () => provider }
+        { getSshFilesystemProvider }
       )
     ).resolves.toEqual({ path: '/workspace/platform', exists: true })
+    expect(getSshFilesystemProvider).toHaveBeenCalledWith('ssh-1')
     expect(provider.stat).toHaveBeenCalledWith('/workspace/platform')
   })
 

@@ -279,4 +279,50 @@ describe('repo slice runtime folder fallback', () => {
       })
     )
   })
+
+  it('scopes direct path status cache by runtime route', async () => {
+    runtimeEnvironmentCall.mockImplementation((request: RuntimeEnvironmentCallRequest) => {
+      const { selector, method, params } = request as {
+        selector: string
+        method: string
+        params?: { path: string }
+      }
+      if (method !== 'folderWorkspace.getPathStatus') {
+        throw new Error(`Unexpected runtime method ${method}`)
+      }
+      return {
+        id: `rpc-path-status-${selector}`,
+        ok: true,
+        result: {
+          status:
+            selector === 'env-1'
+              ? { path: params!.path, exists: true }
+              : { path: params!.path, exists: false, reason: 'missing' as const }
+        },
+        _meta: { runtimeId: `runtime-${selector}` }
+      }
+    })
+    const store = createTestStore()
+    const request = { scope: 'path', path: '/srv/non-git' } as const
+
+    await expect(
+      store.getState().fetchFolderWorkspacePathStatus(request, { runtimeEnvironmentId: 'env-1' })
+    ).resolves.toEqual({ path: '/srv/non-git', exists: true })
+    await expect(
+      store.getState().fetchFolderWorkspacePathStatus(request, { runtimeEnvironmentId: 'env-2' })
+    ).resolves.toEqual({ path: '/srv/non-git', exists: false, reason: 'missing' })
+
+    expect(runtimeEnvironmentCall).toHaveBeenCalledWith({
+      selector: 'env-1',
+      method: 'folderWorkspace.getPathStatus',
+      params: request,
+      timeoutMs: 15_000
+    })
+    expect(runtimeEnvironmentCall).toHaveBeenCalledWith({
+      selector: 'env-2',
+      method: 'folderWorkspace.getPathStatus',
+      params: request,
+      timeoutMs: 15_000
+    })
+  })
 })

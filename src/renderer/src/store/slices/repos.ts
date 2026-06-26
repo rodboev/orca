@@ -905,12 +905,15 @@ function settingsForRepoOwner(state: Pick<AppState, 'repos' | 'settings'>, repoI
   return state.settings
 }
 
-function getFolderWorkspacePathStatusScopeKey(request: FolderWorkspacePathStatusRequest): string {
+function getFolderWorkspacePathStatusScopeKey(
+  request: FolderWorkspacePathStatusRequest,
+  routeSettings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
+): string {
   if (request.scope === 'project-group') {
     return `project-group:${request.projectGroupId}`
   }
   if (request.scope === 'path') {
-    return `path:${request.connectionId ?? ''}:${request.path}`
+    return `path:${getRuntimeTargetCachePrefix(routeSettings)}:${request.connectionId ?? ''}:${request.path}`
   }
   return `folder-workspace:${request.folderWorkspaceId}`
 }
@@ -938,6 +941,8 @@ function getAddRepoPathRouteSettings(
   options: AddRepoPathRouteOptions | undefined,
   fallbackSettings: GlobalSettings | null
 ): Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined {
+  // Why: after Git -> Folder fallback, confirmation can happen after the
+  // focused runtime changes; keep routing pinned to the host that ran the check.
   return options && 'runtimeEnvironmentId' in options
     ? { activeRuntimeEnvironmentId: options.runtimeEnvironmentId ?? null }
     : fallbackSettings
@@ -977,7 +982,8 @@ async function fetchRuntimeAddProjectPathStatus(args: {
 
 function getFolderWorkspaceStatusRequestSnapshot(
   state: Pick<AppState, 'projectGroups' | 'folderWorkspaces' | 'repos' | 'sshConnectionStates'>,
-  request: FolderWorkspacePathStatusRequest
+  request: FolderWorkspacePathStatusRequest,
+  routeSettings?: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null
 ): string | null {
   if (request.scope === 'path') {
     const candidateRepos = state.repos.filter((repo) =>
@@ -1005,9 +1011,14 @@ function getFolderWorkspaceStatusRequestSnapshot(
       )
       .sort()
       .join('|')
-    return [request.path, '', request.connectionId ?? '', sshFingerprint, repoFingerprint].join(
-      '\0'
-    )
+    return [
+      getRuntimeTargetCachePrefix(routeSettings),
+      request.path,
+      '',
+      request.connectionId ?? '',
+      sshFingerprint,
+      repoFingerprint
+    ].join('\0')
   }
 
   const scope =
@@ -1097,9 +1108,10 @@ function getFreshFolderWorkspacePathStatusFromCache(args: {
 
 function getFolderWorkspacePathStatusRequestSnapshotForRead(
   state: AppState,
-  request: FolderWorkspacePathStatusRequest
+  request: FolderWorkspacePathStatusRequest,
+  routeSettings?: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null
 ): string | null {
-  return getFolderWorkspaceStatusRequestSnapshot(state, request)
+  return getFolderWorkspaceStatusRequestSnapshot(state, request, routeSettings)
 }
 
 export type RepoSlice = {
@@ -1473,22 +1485,28 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
     }
   },
 
-  getFolderWorkspacePathStatusCacheKey: (request, options) =>
-    `${getRuntimeTargetCachePrefix(
-      getFolderWorkspacePathStatusRouteSettings(options, get().settings)
-    )}:${getFolderWorkspacePathStatusScopeKey(request)}`,
+  getFolderWorkspacePathStatusCacheKey: (request, options) => {
+    const routeSettings = getFolderWorkspacePathStatusRouteSettings(options, get().settings)
+    return `${getRuntimeTargetCachePrefix(routeSettings)}:${getFolderWorkspacePathStatusScopeKey(request, routeSettings)}`
+  },
 
   getFreshFolderWorkspacePathStatus: (request, options) => {
     const state = get()
+    const routeSettings = getFolderWorkspacePathStatusRouteSettings(options, state.settings)
     const cacheKey = get().getFolderWorkspacePathStatusCacheKey(request, options)
     const cached = state.folderWorkspacePathStatuses[cacheKey]
-    const requestSnapshot = getFolderWorkspacePathStatusRequestSnapshotForRead(state, request)
+    const requestSnapshot = getFolderWorkspacePathStatusRequestSnapshotForRead(
+      state,
+      request,
+      routeSettings
+    )
     return getFreshFolderWorkspacePathStatusFromCache({ entry: cached, requestSnapshot })
   },
 
   fetchFolderWorkspacePathStatus: async (request, options) => {
+    const routeSettings = getFolderWorkspacePathStatusRouteSettings(options, get().settings)
     const cacheKey = get().getFolderWorkspacePathStatusCacheKey(request, options)
-    const requestSnapshot = getFolderWorkspaceStatusRequestSnapshot(get(), request)
+    const requestSnapshot = getFolderWorkspaceStatusRequestSnapshot(get(), request, routeSettings)
     const cached = get().folderWorkspacePathStatuses[cacheKey]
     const freshCachedStatus = getFreshFolderWorkspacePathStatusFromCache({
       entry: cached,
@@ -1498,9 +1516,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       return freshCachedStatus
     }
     try {
-      const target = getActiveRuntimeTarget(
-        getFolderWorkspacePathStatusRouteSettings(options, get().settings)
-      )
+      const target = getActiveRuntimeTarget(routeSettings)
       const status =
         target.kind === 'local'
           ? await window.api.folderWorkspaces.getPathStatus(request)
@@ -1515,7 +1531,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       set((state) => ({
         folderWorkspacePathStatuses:
           requestSnapshot !== null &&
-          getFolderWorkspaceStatusRequestSnapshot(state, request) === requestSnapshot
+          getFolderWorkspaceStatusRequestSnapshot(state, request, routeSettings) === requestSnapshot
             ? {
                 ...state.folderWorkspacePathStatuses,
                 [cacheKey]: { status, checkedAt: Date.now(), requestSnapshot }
