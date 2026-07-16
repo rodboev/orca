@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import Database from '../sqlite/sync-database'
 import { buildOpenCodeSqliteCandidatePath } from './session-scanner-opencode-sqlite-paths'
 import { listOpenCodeSqliteSessions } from './session-scanner-opencode-sqlite-discovery'
+import { loadOpenCodeSqliteSessionMetadata } from './session-scanner-opencode-sqlite-metadata'
 import { parseOpenCodeSqliteSession } from './session-scanner-opencode-sqlite'
+import type { OpenCodeSqliteSessionMetadata } from './session-scanner-types'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 
 let tempDirs: string[] = []
@@ -191,6 +193,64 @@ function insertPart(
      VALUES (?, ?, ?, ?, ?, ?)`
   ).run(args.id, args.messageId, args.sessionId, args.timeCreated, args.timeCreated, data)
 }
+
+function metadataFor(dbPath: string, sessionId: string): OpenCodeSqliteSessionMetadata {
+  return (
+    loadOpenCodeSqliteSessionMetadata({ dbPath, sessionIds: [sessionId] }).get(sessionId) ?? {
+      messageCount: 0,
+      hasConversationMessages: false,
+      previewRows: []
+    }
+  )
+}
+
+function legacyMetadataFor(dbPath: string, sessionId: string): OpenCodeSqliteSessionMetadata {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true })
+  try {
+    const count = db
+      .prepare(
+        `SELECT COUNT(*) AS value FROM message m
+         WHERE m.session_id = ?
+           AND json_extract(m.data, '$.role') IN ('user', 'assistant')`
+      )
+      .get(sessionId) as { value: number }
+    const rows = db
+      .prepare(
+        `SELECT json_extract(m.data, '$.role') AS role,
+                p.data AS part_data,
+                p.time_created,
+                json_extract(m.data, '$.summary.title') AS summary_title,
+                json_extract(m.data, '$.summary.body') AS summary_body
+         FROM message m
+         JOIN part p ON p.message_id = m.id
+         WHERE m.session_id = ?
+           AND json_extract(m.data, '$.role') IN ('user', 'assistant')
+           AND json_extract(p.data, '$.type') = 'text'
+         ORDER BY p.time_created DESC
+         LIMIT 5`
+      )
+      .all(sessionId) as {
+      role: 'user' | 'assistant'
+      part_data: string
+      time_created: number
+      summary_title: string | null
+      summary_body: string | null
+    }[]
+    return {
+      messageCount: count.value,
+      hasConversationMessages: count.value > 0,
+      previewRows: rows.toReversed().map((row) => ({
+        role: row.role,
+        text: (JSON.parse(row.part_data) as { text?: string }).text ?? null,
+        timeCreated: row.time_created,
+        summaryTitle: row.summary_title,
+        summaryBody: row.summary_body
+      }))
+    }
+  } finally {
+    db.close()
+  }
+}
 describe('listOpenCodeSqliteSessions', () => {
   it('returns candidates sorted by time_updated desc via the synthesized mtimeMs', async () => {
     const { db, path } = createTempDb()
@@ -279,15 +339,35 @@ describe('listOpenCodeSqliteSessions', () => {
       buildOpenCodeSqliteCandidatePath(path, 'ses_clean'),
       buildOpenCodeSqliteCandidatePath(path, 'ses_noise')
     ])
+    const pathMetadata = loadOpenCodeSqliteSessionMetadata({
+      dbPath: path,
+      sessionIds: ['ses_clean', 'ses_noise']
+    })
     const cleanSession = await parseOpenCodeSqliteSession({
       dbPath: path,
       sessionId: 'ses_clean',
-      platform: 'darwin'
+      platform: 'darwin',
+      metadata: pathMetadata.get('ses_clean')
     })
     expect(cleanSession?.sessionId).toBe('ses_clean')
-    await expect(
-      parseOpenCodeSqliteSession({ dbPath: path, sessionId: 'ses_noise', platform: 'darwin' })
-    ).rejects.toThrow('malformed JSON')
+    const noisySession = await parseOpenCodeSqliteSession({
+      dbPath: path,
+      sessionId: 'ses_noise',
+      platform: 'darwin',
+      metadata: pathMetadata.get('ses_noise')
+    })
+    expect(noisySession?.messageCount).toBe(1)
+    expect(noisySession?.hasConversationMessages).toBe(false)
+    expect(noisySession?.previewMessages).toEqual([])
+
+    const malformedPartSession = await parseOpenCodeSqliteSession({
+      dbPath: partPath,
+      sessionId: 'ses_part_noise',
+      platform: 'darwin',
+      metadata: metadataFor(partPath, 'ses_part_noise')
+    })
+    expect(malformedPartSession?.messageCount).toBe(1)
+    expect(malformedPartSession?.previewMessages).toEqual([])
   })
 
   it('dedups matching session ids across databases and keeps the newest row', async () => {
@@ -394,6 +474,57 @@ describe('listOpenCodeSqliteSessions', () => {
   })
 })
 
+describe('loadOpenCodeSqliteSessionMetadata', () => {
+  it('matches the former per-session results for multiple sessions on an unindexed DB', () => {
+    const { db, path } = createTempDb()
+    applyOpenCodeSchema(db)
+    const sessionIds = ['ses_batch_a', 'ses_batch_b']
+    for (const [sessionIndex, sessionId] of sessionIds.entries()) {
+      const baseTime = 1_777_634_000_000 + sessionIndex * 10_000
+      insertSession(db, {
+        id: sessionId,
+        timeCreated: baseTime,
+        timeUpdated: baseTime + 9_000
+      })
+      const messageTotal = sessionIndex === 0 ? 7 : 2
+      for (let index = 0; index < messageTotal; index += 1) {
+        const messageId = `${sessionId}_msg_${index}`
+        insertMessage(db, {
+          id: messageId,
+          sessionId,
+          role: index % 2 === 0 ? 'user' : 'assistant',
+          timeCreated: baseTime + index + 1
+        })
+        insertPart(db, {
+          id: `${sessionId}_part_${index}`,
+          messageId,
+          sessionId,
+          timeCreated: baseTime + index + 1,
+          text: `${sessionId} preview ${index + 1}`
+        })
+      }
+    }
+    db.close()
+
+    const batched = loadOpenCodeSqliteSessionMetadata({ dbPath: path, sessionIds })
+    for (const sessionId of sessionIds) {
+      const actual = batched.get(sessionId)
+      expect({
+        messageCount: actual?.messageCount,
+        hasConversationMessages: actual?.hasConversationMessages,
+        previewRows: actual?.previewRows
+      }).toEqual(legacyMetadataFor(path, sessionId))
+    }
+    expect(batched.get('ses_batch_a')?.previewRows.map((row) => row.text)).toEqual([
+      'ses_batch_a preview 3',
+      'ses_batch_a preview 4',
+      'ses_batch_a preview 5',
+      'ses_batch_a preview 6',
+      'ses_batch_a preview 7'
+    ])
+  })
+})
+
 describe('parseOpenCodeSqliteSession', () => {
   it('builds an AiVaultSession with title, cwd, model, tokens, and resume command', async () => {
     const { db, path } = createTempDb()
@@ -442,7 +573,8 @@ describe('parseOpenCodeSqliteSession', () => {
     const session = await parseOpenCodeSqliteSession({
       dbPath: path,
       sessionId: 'ses_1',
-      platform: 'darwin'
+      platform: 'darwin',
+      metadata: metadataFor(path, 'ses_1')
     })
     expect(session).not.toBeNull()
     expect(session!.agent).toBe('opencode')
@@ -491,7 +623,8 @@ describe('parseOpenCodeSqliteSession', () => {
     const session = await parseOpenCodeSqliteSession({
       dbPath: path,
       sessionId: 'ses_2',
-      platform: 'darwin'
+      platform: 'darwin',
+      metadata: metadataFor(path, 'ses_2')
     })
     expect(session).not.toBeNull()
     expect(session!.title).toBe('fallback title from summary')

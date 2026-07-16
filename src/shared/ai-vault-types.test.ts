@@ -8,6 +8,7 @@ import {
 
 type SignalFields = {
   messageCount: number
+  hasConversationMessages?: boolean
   previewMessages: AiVaultSessionPreviewMessage[]
   queuedMessageCount: number
   subagentTranscriptCount: number
@@ -48,6 +49,15 @@ describe('isAiVaultSessionResumableContent', () => {
     expect(isAiVaultSessionResumableContent(signal({ previewMessages: [preview('system')] }))).toBe(
       false
     )
+  })
+
+  it('uses explicit conversation evidence when the row count is approximate', () => {
+    expect(
+      isAiVaultSessionResumableContent(signal({ messageCount: 3, hasConversationMessages: false }))
+    ).toBe(false)
+    expect(
+      isAiVaultSessionResumableContent(signal({ messageCount: 0, hasConversationMessages: true }))
+    ).toBe(true)
   })
 })
 

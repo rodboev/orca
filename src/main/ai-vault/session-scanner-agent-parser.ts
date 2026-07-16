@@ -50,7 +50,8 @@ export async function parseAgentSessionFile(
         return parseOpenCodeSqliteSession({
           dbPath: sqliteCandidate.dbPath,
           sessionId: sqliteCandidate.sessionId,
-          platform
+          platform,
+          metadata: candidate.opencodeSqliteMetadata
         })
       }
       return parseOpenCodeSessionFile(candidate.file, platform)

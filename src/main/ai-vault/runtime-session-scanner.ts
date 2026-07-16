@@ -69,6 +69,9 @@ const aiVaultListResultSchema = z.object({
       updatedAt: z.string().nullable(),
       modifiedAt: z.string(),
       messageCount: z.number(),
+      // Optional keeps compatibility with runtime hosts predating the split
+      // between an approximate row count and exact conversation evidence.
+      hasConversationMessages: z.boolean().optional(),
       totalTokens: z.number(),
       previewMessages: z.array(aiVaultSessionPreviewMessageSchema),
       // Default keeps remote hosts running an older build (no recoverable-signal

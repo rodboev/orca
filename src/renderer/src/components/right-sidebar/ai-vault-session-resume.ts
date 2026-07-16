@@ -208,7 +208,7 @@ function resolveAiVaultResumeTargetState(args: {
 // copying the command stays available for blocked-but-real sessions, so the copy
 // affordance is gated on content alone.
 export function aiVaultSessionRowResumeGating(
-  session: Pick<AiVaultSession, 'messageCount' | 'previewMessages'>,
+  session: Pick<AiVaultSession, 'messageCount' | 'previewMessages' | 'hasConversationMessages'>,
   state: Pick<AiVaultSessionResumeState, 'blocked'> | null
 ): { resumeDisabled: boolean; canCopyResumeCommand: boolean } {
   const hasResumableContent = isAiVaultSessionResumableContent(session)

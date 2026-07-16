@@ -87,6 +87,9 @@ export type AiVaultSession = {
   updatedAt: string | null
   modifiedAt: string
   messageCount: number
+  // When present, distinguishes a cheap approximate history count from actual
+  // user/assistant content without changing other agents' parser contracts.
+  hasConversationMessages?: boolean
   totalTokens: number
   previewMessages: AiVaultSessionPreviewMessage[]
   // Recoverable signal for sessions whose conversation transcript persisted zero
@@ -119,10 +122,10 @@ export type AiVaultSubagentListResult = {
 // Conversation previews count as evidence too: some parsers (e.g. Grok, OpenCode
 // fallback schemas) only learn the turn count from metadata that may be absent.
 export function isAiVaultSessionResumableContent(
-  session: Pick<AiVaultSession, 'messageCount' | 'previewMessages'>
+  session: Pick<AiVaultSession, 'messageCount' | 'previewMessages' | 'hasConversationMessages'>
 ): boolean {
   return (
-    session.messageCount > 0 ||
+    (session.hasConversationMessages ?? session.messageCount > 0) ||
     session.previewMessages.some(
       (message) => message.role === 'user' || message.role === 'assistant'
     )

@@ -108,6 +108,17 @@ describe('runtime AI Vault session scanner', () => {
       })
     ])
   })
+
+  it('preserves explicit conversation evidence from runtime hosts', async () => {
+    mocks.callRuntimeEnvironment.mockResolvedValueOnce({
+      ok: true,
+      result: result([{ ...session('runtime:env-1', 'session-1'), hasConversationMessages: false }])
+    })
+
+    const scanResult = await scanRuntimeAiVaultSessions('/user-data', 'env-1', {})
+
+    expect(scanResult.sessions[0]?.hasConversationMessages).toBe(false)
+  })
 })
 
 function result(

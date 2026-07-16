@@ -105,6 +105,35 @@ function storeEntry(path: string, entry: SessionParseCacheEntry): void {
   }
 }
 
+function reusableEntry(
+  candidate: SessionFileCandidate,
+  platform: NodeJS.Platform
+): SessionParseCacheEntry | undefined {
+  const { file } = candidate
+  const entry = cache.get(file.path)
+  const unchanged =
+    entry !== undefined &&
+    entry.platform === platform &&
+    entry.mtimeMs === file.mtimeMs &&
+    (entry.sizeBytes === null || file.sizeBytes === undefined || entry.sizeBytes === file.sizeBytes)
+  return unchanged ? entry : undefined
+}
+
+/** Let source-specific prefetchers avoid work that the parse cache will reuse. */
+export function hasReusableSessionParseCacheEntry(
+  candidate: SessionFileCandidate,
+  platform: NodeJS.Platform
+): boolean {
+  const entry = reusableEntry(candidate, platform)
+  if (!entry) {
+    return false
+  }
+  // Why: keep a prefetched cache hit resident until its later frontier slot is
+  // parsed; otherwise intervening misses could evict it after metadata was skipped.
+  storeEntry(candidate.file.path, entry)
+  return true
+}
+
 /**
  * Parse a session file, reusing prior work where the file is provably
  * unchanged (mtime+size) and, for append-only JSONL transcripts (Claude,
@@ -120,14 +149,9 @@ export async function parseAgentSessionFileCached(
   stats?: SessionParseStats
 ): Promise<AiVaultSession | null> {
   const { file } = candidate
-  const entry = cache.get(file.path)
-
-  const unchanged =
-    entry !== undefined &&
-    entry.platform === platform &&
-    entry.mtimeMs === file.mtimeMs &&
-    (entry.sizeBytes === null || file.sizeBytes === undefined || entry.sizeBytes === file.sizeBytes)
-  if (unchanged) {
+  const cachedEntry = cache.get(file.path)
+  const entry = reusableEntry(candidate, platform)
+  if (entry) {
     if (stats) {
       stats.reused++
     }
@@ -150,7 +174,7 @@ export async function parseAgentSessionFileCached(
     const parsed = await parseResumableCandidate({
       candidate,
       platform,
-      entry,
+      entry: cachedEntry,
       stats,
       stateFactory
     })
